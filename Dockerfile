@@ -12,10 +12,16 @@ ENV DENO_DIR=/tmp/deno
 WORKDIR /app
 
 # Install yt-dlp + API dependencies
-RUN pip install --no-cache-dir yt-dlp fastapi "uvicorn[standard]"
+RUN pip install --no-cache-dir yt-dlp fastapi "uvicorn[standard]" python-multipart
 
 # Copy only the API server
 COPY api_server.py /app/api_server.py
+
+# Persistent data directory (cookies + downloads)
+RUN mkdir -p /app/data
+VOLUME /app/data
+ENV COOKIES_FILE=/app/data/cookies.txt
+ENV DOWNLOAD_DIR=/tmp/yt-dlp-downloads
 
 EXPOSE 8000
 

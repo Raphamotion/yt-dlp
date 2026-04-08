@@ -8,7 +8,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, HttpUrl
 
@@ -20,6 +20,8 @@ app = FastAPI(
 
 DOWNLOAD_DIR = Path(os.getenv("DOWNLOAD_DIR", "/tmp/yt-dlp-downloads"))
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+COOKIES_FILE = Path(os.getenv("COOKIES_FILE", "/app/cookies.txt"))
 
 MAX_TIMEOUT = int(os.getenv("MAX_TIMEOUT", "300"))
 
@@ -41,9 +43,16 @@ class DownloadRequest(BaseModel):
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+def _cookie_args() -> list[str]:
+    """Return --cookies flag if cookies file exists."""
+    if COOKIES_FILE.is_file() and COOKIES_FILE.stat().st_size > 0:
+        return ["--cookies", str(COOKIES_FILE)]
+    return []
+
+
 def _run_ytdlp(args: list[str], timeout: int = MAX_TIMEOUT) -> subprocess.CompletedProcess:
     """Run yt-dlp as a subprocess with timeout."""
-    cmd = ["yt-dlp", *args]
+    cmd = ["yt-dlp", *_cookie_args(), *args]
     try:
         return subprocess.run(
             cmd,
@@ -61,7 +70,34 @@ def _run_ytdlp(args: list[str], timeout: int = MAX_TIMEOUT) -> subprocess.Comple
 async def health():
     """Health check."""
     result = _run_ytdlp(["--version"], timeout=10)
-    return {"status": "ok", "yt_dlp_version": result.stdout.strip()}
+    has_cookies = COOKIES_FILE.is_file() and COOKIES_FILE.stat().st_size > 0
+    return {
+        "status": "ok",
+        "yt_dlp_version": result.stdout.strip(),
+        "cookies_loaded": has_cookies,
+    }
+
+
+@app.post("/cookies")
+async def upload_cookies(file: UploadFile = File(...)):
+    """Upload a Netscape cookies.txt file for authenticated downloads (YouTube, etc)."""
+    content = await file.read()
+    if len(content) > 1_000_000:
+        raise HTTPException(status_code=400, detail="Cookies file too large (max 1MB)")
+    text = content.decode("utf-8", errors="replace")
+    if "# Netscape HTTP Cookie File" not in text and "# HTTP Cookie File" not in text:
+        raise HTTPException(status_code=400, detail="Invalid cookies.txt format — must be Netscape format")
+    COOKIES_FILE.write_bytes(content)
+    return {"status": "ok", "message": "Cookies uploaded", "size_bytes": len(content)}
+
+
+@app.delete("/cookies")
+async def delete_cookies():
+    """Remove the stored cookies file."""
+    if COOKIES_FILE.is_file():
+        COOKIES_FILE.unlink()
+        return {"status": "deleted"}
+    raise HTTPException(status_code=404, detail="No cookies file found")
 
 
 @app.post("/info")
